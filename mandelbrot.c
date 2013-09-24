@@ -25,7 +25,7 @@ float (*iters)(double, double);	// what function to use to get the iteration cou
 int power = 3;
 
 /* Overlay constants */
-const int 	novchars = 3;
+#define 	novchars 3
 const int 	npieces = 2 * novchars - 1;
 const char 	ovchars[] = {' ', 'o','@'};
 const double	ovfacs[] = {0, 32, 80};
