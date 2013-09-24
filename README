@@ -1,0 +1,46 @@
+Welcome to XTermBrot, the Mandelbrot set viewer for use with XTerm. All drawing
+is accomplished by using escape sequences to set the color of characters 
+printed to the terminal. 
+
+Included fractals are the traditional Mandelbrot set, Multibrots with exponents
+3 to 9, and the Burning Ship fractal. Change the fractal by pressing the keys
+1 through 9. 1 is the Burning Ship, and 2-9 are multibrots of the corresponding
+power. 
+
+W/A/S/D control the movement, = and - zoom in and out, respectively. 
+
+[ and ] decrease and increase the maximum iteration count. 
+
+The z, x, and c keys control the rendering mode. In the most basic scheme, one
+of the colors {magenta, red, yellow, green, cyan, blue} is selected for the 
+background color and a space is printed. This is the fastest and ugliest mode.
+Pressing 'z' will toggle dithering, which is done by the classic error 
+propogation scheme of Floyd and Steinberg. Pressing 'x' will toggle the display
+of 'overlay' characters, which are printed on top of the background in a
+different color to effectively increase the number of available colors. 
+
+Pressing 'c' will toggle between this predefined color ordering and a custom
+color ramp, which will be approximated with dithering. Note that when a custom
+ramp is in effect, dithering will always be enabled. Note that the custom ramp
+with overlay characters can be several times slower than the simplest mode.
+
+To specify a color ramp to use, provide a file as a command line argument when
+you start xtermbrot. Several examples are provided in the 'ramps' subdirectory.
+The file format is very simple. The first line contains an integer specifying
+the number of colors that will be in the ramp. Each subsequent line defines one
+of these colors, as 3 whitespace-separated values between 0 and 256, inclusive.
+
+If no ramp is specified, a default is used (which currently happens to be the
+same as the one in the file ramps/purpley). 
+
+There are several keys for controlling the mapping of the smoothed iteration 
+count, which is applied before coloring. Where m is the output, i is the input,
+and E, L, and C are constants, the function is:
+
+    m = (i^E) * L + C
+
+The 'u' and 'j' characters increase or decrease E by a fixed amount.
+The 'i' and 'k' characters increase or decrease L by a constant factor.
+The 'o' and 'l' characters increase or decrease C by a fixex amount.
+
+You can see a list of command characters by typing 'h' from within the program.
