@@ -3,13 +3,14 @@
 #include <math.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 const double MOVC = 0.35;
 int ITER_MAX = 100;
 int wd, ht;
-double ca = -1.6;
+double ca = -0.5;
 double cb = 0.0;
-double sa = 0.1;
+double sa = 1.8;
 double ar, sb, la, lb, stepa, stepb;
 
 bool helping = false;
@@ -17,6 +18,8 @@ bool helping = false;
 bool  use_dither = true;
 bool  use_overlays = true;
 short *error;
+float (*iters)(double, double);	// what function to use to get the iteration count. 
+int power = 3;
 
 void init (){
 	wd = get_width();
@@ -46,11 +49,11 @@ void set_zoom (double size_a){
 	lb = cb - sb;
 }
 
-const double BAILOUT = 1e20;	// this is the value squared
-const double BANDING = 10;
-const double LOGP = 0.6931471805;	// ln(2)
+const double BAILOUT = 1e2;	// this is the value squared
+const double BANDING = 1;
+double LOGP = 0.6931471805;	// ln(2)
 
-float iters (double a, double b){
+float mandelbrot (double a, double b){
 	int ct = 0;
 	double za = a;
 	double zb = b;
@@ -65,6 +68,61 @@ float iters (double a, double b){
 		return -1;
 	}
 	return (float) (ct - (log(log((za*za + zb*zb)/BANDING))/LOGP));
+}
+
+float multibrot (double a, double b){
+	int ct = 0;
+	double za = a;
+	double zb = b;
+	while (za * za + zb * zb < BAILOUT && ct < ITER_MAX){
+		// z = z^n + c.
+		int n = 1;
+		double xa = za;
+		double xb = zb;
+		while (n < power){
+			double tmp = za*xa - zb*xb;
+			zb = za * xb + xa * zb;
+			za = tmp;
+			n++;
+		}
+		za += a;
+		zb += b;
+		ct ++;
+	}
+	if (ct == ITER_MAX) return -1;
+	return (float) (ct - (log(log((za*za + zb*zb)/BANDING))/LOGP));
+}
+
+float burning_ship (double a, double b){
+	int ct = 0;
+	double za = a;
+	double zb = -b;	// turn it upside down
+	while (za * za + zb * zb < BAILOUT && ct < ITER_MAX){
+		// z = |z^2| + c
+		za = fabs(za);
+		zb = fabs(zb);
+		double tmp = za*za - zb*zb;
+		zb = 2*za*zb + b;
+		za = tmp + a;
+		ct ++;
+	}
+	if (ct == ITER_MAX) return -1;
+//	return ct;
+	return (float) (ct - (log(log((za*za+zb*zb)/BANDING))/LOGP));
+}
+
+void set_fractal (int i){
+	power = i;
+	LOGP = log(i);
+	if (i == 1){
+		iters = burning_ship;
+		power = 2;
+		LOGP = log(2.0);
+	} else if (i == 2){
+		iters = mandelbrot;
+	} else {
+		iters = multibrot;
+	}
 }
 
 double linear = 1;
@@ -204,6 +262,7 @@ void help (){
 
 int main (){
 	init();
+	set_fractal(1);
 //	printf("L = (%f, %f); S = (%f, %f); ar = %f; step = (%f, %f)\n", la, lb, sa, sb, ar, stepa, stepb);
 	erase_all();
 	render();
@@ -268,6 +327,8 @@ int main (){
 				use_dither = !use_dither;
 			} else if (inp == 'x'){
 				use_overlays = !use_overlays;
+			} else if (isdigit(inp)){
+				set_fractal(inp - '0');
 			} else {
 				continue;
 			}
