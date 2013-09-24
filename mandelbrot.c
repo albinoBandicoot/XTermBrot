@@ -17,11 +17,42 @@ bool helping = false;
 
 bool  use_dither = true;
 bool  use_overlays = true;
+bool  use_ramp = false;
 short *error;
 float (*iters)(double, double);	// what function to use to get the iteration count. 
 int power = 3;
 
-void init (){
+typedef struct {
+	short r;
+	short g;
+	short b;
+} color_t;
+
+color_t *cerror;	// color error.
+color_t *ramp;	// color ramp
+color_t *palette;
+int palette_n = 8;
+int ramp_n;	// how many colors in the ramp
+
+color_t rgb (short r, short g, short b){
+	color_t res;
+	res.r = r;
+	res.g = g;
+	res.b = b;
+	return res;
+}
+
+int col_dist (color_t a, color_t b){
+	return (((int) a.r - b.r) * ((int) a.r - b.r) + ((int) a.g - b.g) * ((int) a.g - b.g) + ((int) a.b - b.b) * ((int) a.b - b.b));
+}
+
+void col_add_mul (color_t *res, color_t *a, float d){
+	res->r += (short) (a->r * d);
+	res->g += (short) (a->g * d);
+	res->b += (short) (a->b * d);
+}
+
+void init (const char *ramp_fname){
 	wd = get_width();
 	ht = get_height();
 	error = (short *)(calloc(wd * ht, sizeof(short)));
@@ -31,6 +62,28 @@ void init (){
 	lb = cb - sb;
 	stepa = (2*sa)/wd;
 	stepb = (2*sb)/ht;
+	if (use_ramp){
+		cerror = (color_t *)(calloc(wd * ht, sizeof(color_t)));
+		palette = (color_t *)(malloc(8 * sizeof(color_t)));
+		palette[0] = rgb(0,0,0);
+		palette[1] = rgb(256,0,0);
+		palette[2] = rgb(0,256,0);
+		palette[3] = rgb(256,256,0);
+		palette[4] = rgb(0,0,256);
+		palette[5] = rgb(256,0,256);
+		palette[6] = rgb(0,256,256);
+		palette[7] = rgb(256,256,256);	// this numbering corresponds to the terminal codes.
+
+		/* Read the ramp in from the file */
+		FILE *rampfile = fopen(ramp_fname, "r");
+		fscanf(rampfile, "%d\n", &ramp_n);
+		ramp = (color_t *)(malloc(ramp_n * sizeof(color_t)));
+		for (int i=0; i < ramp_n; i++){
+			fscanf(rampfile, "%hd %hd %hd\n", &(ramp[i].r), &(ramp[i].g), &(ramp[i].b));
+			printf("Found ramp color: %d, %d, %d\n", ramp[i].r, ramp[i].g, ramp[i].b);
+		}
+		fclose(rampfile);
+	}
 }
 
 void set_center (double a, double b){
@@ -49,8 +102,8 @@ void set_zoom (double size_a){
 	lb = cb - sb;
 }
 
-const double BAILOUT = 1e2;	// this is the value squared
-const double BANDING = 1;
+const double BAILOUT = 1e20;	// this is the value squared
+const double BANDING = 10;
 double LOGP = 0.6931471805;	// ln(2)
 
 float mandelbrot (double a, double b){
@@ -152,11 +205,56 @@ int mod (int a, int m){
 	return m + (a%m);
 }
 
+void draw_with_ramp (float iters, int x, int y){
+	if (iters == -1){
+		color (BG, BLACK);
+		putchar(' ');
+		return;
+	}
+	float mapped = map(iters);
+	float d = mapped - (int) mapped;
+	int idx = ((int) mapped) % ramp_n;
+	int nidx = (idx + 1) % ramp_n;
+	color_t col;
+	col.r = (short) (ramp[idx].r * (1-d) + ramp[nidx].r * d) + cerror[y*wd+x].r;
+	col.g = (short) (ramp[idx].g * (1-d) + ramp[nidx].g * d) + cerror[y*wd+x].g;
+	col.b = (short) (ramp[idx].b * (1-d) + ramp[nidx].b * d) + cerror[y*wd+x].b;
+//	printf("COL: %d, %d, %d\n", col.r, col.g, col.b);
+	// col now holds the target color.
+	
+	int best_idx = 1;
+	int badness = 0x5fffffff;
+	for (int i=0; i < palette_n; i++){
+		int bad = col_dist(col, palette[i]);
+		if (bad < badness){
+			badness = bad;
+			best_idx = i;
+		}
+	}
+	color_t err;
+	err.r = col.r - palette[best_idx].r;
+	err.g = col.g - palette[best_idx].g;
+	err.b = col.b - palette[best_idx].b;
+	// now we diffuse the error to the other pixels.
+	if (y+1 < ht && x > 0 && x+1 < wd){
+		col_add_mul(&cerror[y*wd + x + 1], 	&err, 7/16.0);
+		col_add_mul(&cerror[(y+1)*wd + x-1], 	&err, 3/16.0);
+		col_add_mul(&cerror[(y+1)*wd + x], 	&err, 5/16.0);
+		col_add_mul(&cerror[(y+1)*wd + x+1], 	&err, 1/16.0);
+	}
+	color(BG, best_idx);
+	putchar(' ');
+}
+
 /* Draws a pixel. This may involve dithering, setting the FG and BG colors, and printing spaces or potentially other characters. */
 void draw_pixel(float iters, int x, int y){	
 	if (iters == -1){
 		color(BG, BLACK);
 		putchar(' ');
+		return;
+	}
+	if (use_ramp){
+		draw_with_ramp (iters, x, y);
 		return;
 	}
 	float mapped = map(iters);
@@ -200,8 +298,12 @@ void draw_pixel(float iters, int x, int y){
 }
 
 void render (){
-	if (use_dither){
-		memset(error, 0, wd*ht*sizeof(short));	// clear the error matrix.
+	if (use_ramp){
+		memset(cerror, 0, wd*ht*sizeof(color_t));
+	} else {
+		if (use_dither){
+			memset(error, 0, wd*ht*sizeof(short));	// clear the error matrix.
+		}
 	}
 	for (int i=0; i<ht-1; i++){
 		double b = lb + i*stepb;
@@ -260,9 +362,15 @@ void help (){
 }
 
 
-int main (){
-	init();
-	set_fractal(1);
+int main (int argc, const char *argv[]){
+	if (argc > 1){
+		use_ramp = true;
+		init(argv[1]);
+	} else {
+		use_ramp = false;
+		init("");
+	}
+	set_fractal(2);
 //	printf("L = (%f, %f); S = (%f, %f); ar = %f; step = (%f, %f)\n", la, lb, sa, sb, ar, stepa, stepb);
 	erase_all();
 	render();
