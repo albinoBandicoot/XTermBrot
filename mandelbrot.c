@@ -7,16 +7,21 @@
 const double MOVC = 0.35;
 int ITER_MAX = 100;
 int wd, ht;
-double ca = -0.5;
+double ca = -1.6;
 double cb = 0.0;
-double sa = 1.8;
+double sa = 0.1;
 double ar, sb, la, lb, stepa, stepb;
 
 bool helping = false;
 
+bool  use_dither = true;
+bool  use_overlays = true;
+short *error;
+
 void init (){
 	wd = get_width();
 	ht = get_height();
+	error = (short *)(calloc(wd * ht, sizeof(short)));
 	ar = ((double) wd)/ht;
 	sb = 2 * sa / ar;	// factor of two to account for stretching of terminal.
 	la = ca - sa;
@@ -41,11 +46,15 @@ void set_zoom (double size_a){
 	lb = cb - sb;
 }
 
-int iters (double a, double b){
+const double BAILOUT = 1e20;	// this is the value squared
+const double BANDING = 10;
+const double LOGP = 0.6931471805;	// ln(2)
+
+float iters (double a, double b){
 	int ct = 0;
 	double za = a;
 	double zb = b;
-	while (za*za + zb*zb < 4 && ct < ITER_MAX){
+	while (za*za + zb*zb < BAILOUT && ct < ITER_MAX){
 		// z = z^2 + c
 		double tmp = za*za - zb*zb;
 		zb = 2*za*zb + b;
@@ -55,7 +64,7 @@ int iters (double a, double b){
 	if (ct == ITER_MAX){
 		return -1;
 	}
-	return ct;
+	return (float) (ct - (log(log((za*za + zb*zb)/BANDING))/LOGP));
 }
 
 double linear = 1;
@@ -64,31 +73,88 @@ double offset = 0;
 const int ncolors = 6;
 const int colors[] = {YELLOW, RED, MAGENTA, BLUE, CYAN, GREEN};
 
-int get_color (int iters){
-	if (iters == -1) return BLACK;
+float map (float iters){
+	if (iters == -1) return -1;
+	if (iters < 0) iters = 0;
 	double d = pow(iters, exponent);
 	d *= linear;
 	while (offset < 0){
 		offset += ncolors;
 	}
 	d += offset;
-	int idx = (int) d;
-	idx %= ncolors;
-	return colors[idx];
+	return d;
+}
+
+const int 	novchars = 3;
+const int 	npieces = 2 * novchars - 1;
+const char 	ovchars[] = {' ', 'o','@'};
+
+int mod (int a, int m){
+	if (a >= 0) return a%m;
+	return m + (a%m);
+}
+
+/* Draws a pixel. This may involve dithering, setting the FG and BG colors, and printing spaces or potentially other characters. */
+void draw_pixel(float iters, int x, int y){	
+	if (iters == -1){
+		color(BG, BLACK);
+		putchar(' ');
+		return;
+	}
+	float mapped = map(iters);
+	if (use_dither) mapped += error[y*wd + x]/8192.0f;
+	short newerror = 0;
+	if (use_overlays){
+		int bg = (int) (mapped + 0.5f);
+		float err = mapped - bg;
+		int fg = (err > 0) ? (bg + 1) : (bg - 1);
+		err += 0.5;	// now on [0..1]
+		err *= npieces;	// now on [0..npieces]
+		int ch = (int) err;
+		ch -= (novchars - 1);
+		float newerr= mapped - bg - (ch * 1.0f/npieces);	// ha!
+		newerror = (short) (8192.0f * newerr / 16.0f);
+		char todraw = ovchars[abs(ch)];
+
+		color(FG, colors[mod(fg,ncolors)]);
+		color(BG, colors[mod(bg,ncolors)]);
+		putchar(todraw);
+
+	} else {
+		int idx = (int) (mapped + 0.5f);	
+		newerror = (short) (8192.0f * (mapped - idx)/16.0f);
+		idx %= ncolors;
+		color(BG, colors[idx]);
+		putchar(' ');
+	}
+	if (use_dither && y+1 < ht && x > 0 && x+1 < wd){
+		/* propogate the error according to the Floyd-Steinberg dithering algorithm. The kernel is:
+		 * 
+		 * 1/16 * | 0 * 7 |
+		 *        | 3 5 1 |	Where * is the current pixel.
+		 */
+		//		printf("X = %d Y = %d; newerror = %d\n", x, y, newerror);
+		error[y*wd + x+1] += newerror * 7;
+		error[(y+1)*wd + (x-1)] += newerror * 3;
+		error[(y+1)*wd + x] += newerror * 5;
+		error[(y+1)*wd + (x+1)] += newerror;
+	}
 }
 
 void render (){
-	for (int i=0; i<ht; i++){
+	if (use_dither){
+		memset(error, 0, wd*ht*sizeof(short));	// clear the error matrix.
+	}
+	for (int i=0; i<ht-1; i++){
 		double b = lb + i*stepb;
 		for (int j=0; j<wd; j++){
 			double a = la + j*stepa;
-			int res = iters(a,b);
-			color(BG, get_color(res));
-			putchar(' ');
+			draw_pixel(iters(a,b), j, i);
 		}
 		putchar('\n');
 	}
 	color(BG, BLACK);
+	color(FG, WHITE);
 	setpos(ht, 1);
 	printf("Iters: %d\tSize: (%f, %f) \tCenter: (%f, %f)\n", ITER_MAX, sa, sb, ca, cb);
 }
@@ -125,8 +191,12 @@ void help (){
 	setpos(top+15, left+1);
 	printf("c          Reset to defaults");
 	setpos(top+17, left+1);
-	printf("h          Show or hide this help");
+	printf("z          Toggle dithering");
 	setpos(top+19, left+1);
+	printf("x          Toggle overlays (characters printed on top)");
+	setpos(top+21, left+1);
+	printf("h          Show or hide this help");
+	setpos(top+23, left+1);
 	printf("q          Quit");
 	fflush(stdout);
 }
@@ -140,7 +210,7 @@ int main (){
 	keyboard_mode (KEY_INTERACTIVE);
 	ikb_block(true);
 	while (true){
-		char inp = 'z';	// meaningless
+		char inp = 2;	// meaningless
 		read(0, &inp, 1);
 		if (inp != 0 && inp != -1){
 			if (inp == '='){
@@ -193,6 +263,11 @@ int main (){
 				exponent = 0.8;
 				linear = 1;
 				offset = 0;
+				use_dither = true;
+			} else if (inp == 'z'){
+				use_dither = !use_dither;
+			} else if (inp == 'x'){
+				use_overlays = !use_overlays;
 			} else {
 				continue;
 			}
