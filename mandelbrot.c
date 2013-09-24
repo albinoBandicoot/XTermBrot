@@ -1,4 +1,5 @@
 #include <termctl.h>
+#include <time.h>
 #include <string.h>	// for memset
 #include <math.h>
 #include <unistd.h>
@@ -6,6 +7,7 @@
 #include <ctype.h>
 
 const double MOVC = 0.35;
+const double SCALE_C = 0.65;
 int ITER_MAX = 100;
 int wd, ht;
 double ca = -0.5;
@@ -22,6 +24,12 @@ short *error;
 float (*iters)(double, double);	// what function to use to get the iteration count. 
 int power = 3;
 
+/* Overlay constants */
+const int 	novchars = 3;
+const int 	npieces = 2 * novchars - 1;
+const char 	ovchars[] = {' ', 'o','@'};
+const double	ovfacs[] = {0, 32, 80};
+
 typedef struct {
 	short r;
 	short g;
@@ -31,7 +39,7 @@ typedef struct {
 color_t *cerror;	// color error.
 color_t *ramp;	// color ramp
 color_t *palette;
-int palette_n = 8;
+int palette_n = 136;
 int ramp_n;	// how many colors in the ramp
 
 color_t rgb (short r, short g, short b){
@@ -52,6 +60,33 @@ void col_add_mul (color_t *res, color_t *a, float d){
 	res->b += (short) (a->b * d);
 }
 
+void col_mix (color_t *res, color_t *a, color_t *b, float d){
+	res->r = (1-d) * a->r + d * b->r;
+	res->g = (1-d) * a->g + d * b->g;
+	res->b = (1-d) * a->b + d * b->b;
+}
+
+void init_palette (){
+	palette = (color_t *)(malloc(136 * sizeof(color_t)));
+	palette[0] = rgb(0,0,0);
+	palette[17] = rgb(256,0,0);
+	palette[34] = rgb(0,256,0);
+	palette[51] = rgb(256,256,0);
+	palette[68] = rgb(0,0,256);
+	palette[85] = rgb(256,0,256);
+	palette[102] = rgb(0,256,256);
+	palette[119] = rgb(256,256,256);	// this numbering corresponds to the terminal codes.
+	for (int bg = 0; bg < 8; bg++){
+		for (int fg = 0; fg < 8; fg ++){
+			col_mix(&palette[bg*17 + fg + 1], &palette[bg*17], &palette[fg*17], ovfacs[1]/256.0f);
+			col_mix(&palette[bg*17 + fg + 9], &palette[bg*17], &palette[fg*17], ovfacs[2]/256.0f);
+		}
+	}
+	for (int i=0; i<136; i++){
+		printf("palette[%d] = %d, %d, %d\n", i, palette[i].r, palette[i].g, palette[i].b);
+	}
+}
+
 void init (const char *ramp_fname){
 	wd = get_width();
 	ht = get_height();
@@ -62,17 +97,10 @@ void init (const char *ramp_fname){
 	lb = cb - sb;
 	stepa = (2*sa)/wd;
 	stepb = (2*sb)/ht;
+
+	init_palette();
+	cerror = (color_t *)(calloc(wd * ht, sizeof(color_t)));
 	if (use_ramp){
-		cerror = (color_t *)(calloc(wd * ht, sizeof(color_t)));
-		palette = (color_t *)(malloc(8 * sizeof(color_t)));
-		palette[0] = rgb(0,0,0);
-		palette[1] = rgb(256,0,0);
-		palette[2] = rgb(0,256,0);
-		palette[3] = rgb(256,256,0);
-		palette[4] = rgb(0,0,256);
-		palette[5] = rgb(256,0,256);
-		palette[6] = rgb(0,256,256);
-		palette[7] = rgb(256,256,256);	// this numbering corresponds to the terminal codes.
 
 		/* Read the ramp in from the file */
 		FILE *rampfile = fopen(ramp_fname, "r");
@@ -83,7 +111,15 @@ void init (const char *ramp_fname){
 			printf("Found ramp color: %d, %d, %d\n", ramp[i].r, ramp[i].g, ramp[i].b);
 		}
 		fclose(rampfile);
+	} else {	// initialize a default ramp so that if the user turns custom ramp coloring on, there will be something there. 
+		ramp_n = 4;
+		ramp = (color_t *)(malloc(ramp_n * sizeof(color_t)));
+		ramp[0] = rgb(100, 20, 150);
+		ramp[1] = rgb(40, 0, 30);
+		ramp[2] = rgb(140, 100, 20);
+		ramp[3] = rgb(80, 30, 50);
 	}
+
 }
 
 void set_center (double a, double b){
@@ -196,9 +232,6 @@ float map (float iters){
 	return d;
 }
 
-const int 	novchars = 3;
-const int 	npieces = 2 * novchars - 1;
-const char 	ovchars[] = {' ', 'o','@'};
 
 int mod (int a, int m){
 	if (a >= 0) return a%m;
@@ -224,11 +257,21 @@ void draw_with_ramp (float iters, int x, int y){
 	
 	int best_idx = 1;
 	int badness = 0x5fffffff;
-	for (int i=0; i < palette_n; i++){
-		int bad = col_dist(col, palette[i]);
-		if (bad < badness){
-			badness = bad;
-			best_idx = i;
+	if (use_overlays){
+		for (int i=0; i < palette_n; i++){
+			int bad = col_dist(col, palette[i]);
+			if (bad < badness){
+				badness = bad;
+				best_idx = i;
+			}
+		}
+	} else {
+		for (int i=0; i < 8; i++){
+			int bad = col_dist(col, palette[i*17]);
+			if (bad < badness){
+				badness = bad;
+				best_idx = i*17;
+			}
 		}
 	}
 	color_t err;
@@ -242,8 +285,19 @@ void draw_with_ramp (float iters, int x, int y){
 		col_add_mul(&cerror[(y+1)*wd + x], 	&err, 5/16.0);
 		col_add_mul(&cerror[(y+1)*wd + x+1], 	&err, 1/16.0);
 	}
-	color(BG, best_idx);
-	putchar(' ');
+	if (best_idx % 17 == 0){
+		color(BG, best_idx/17);
+		putchar(' ');
+	} else {
+		color(BG, best_idx/17);
+		int rem = best_idx % 17;
+		color(FG, (rem-1)%8);
+		if (rem-1 < 8){
+			putchar(ovchars[1]);
+		} else {
+			putchar(ovchars[2]);
+		}
+	}
 }
 
 /* Draws a pixel. This may involve dithering, setting the FG and BG colors, and printing spaces or potentially other characters. */
@@ -298,6 +352,7 @@ void draw_pixel(float iters, int x, int y){
 }
 
 void render (){
+	long start_time = clock();
 	if (use_ramp){
 		memset(cerror, 0, wd*ht*sizeof(color_t));
 	} else {
@@ -316,7 +371,8 @@ void render (){
 	color(BG, BLACK);
 	color(FG, WHITE);
 	setpos(ht, 1);
-	printf("Iters: %d\tSize: (%f, %f) \tCenter: (%f, %f)\n", ITER_MAX, sa, sb, ca, cb);
+	int elapsed = (int) (clock() - start_time)/1000;
+	printf("Iters: %d    Size: (%f, %f)    Center: (%f, %f)   Dither? %s    Overlays? %s       [time: %d ms]\n", ITER_MAX, sa, sb, ca, cb, use_dither?"yes":"no", use_overlays?"yes":"no", elapsed);
 }
 
 void help (){
@@ -349,14 +405,16 @@ void help (){
 	setpos(top+13, left+1);
 	printf("o l        Increase or decrease coloring offset");
 	setpos(top+15, left+1);
-	printf("c          Reset to defaults");
+	printf("r          Reset to defaults");
 	setpos(top+17, left+1);
 	printf("z          Toggle dithering");
 	setpos(top+19, left+1);
 	printf("x          Toggle overlays (characters printed on top)");
 	setpos(top+21, left+1);
-	printf("h          Show or hide this help");
+	printf("c          Toggle use of custom color ramp (must specify a file on the command line");
 	setpos(top+23, left+1);
+	printf("h          Show or hide this help");
+	setpos(top+25, left+1);
 	printf("q          Quit");
 	fflush(stdout);
 }
@@ -381,9 +439,9 @@ int main (int argc, const char *argv[]){
 		read(0, &inp, 1);
 		if (inp != 0 && inp != -1){
 			if (inp == '='){
-				set_zoom(0.8 * sa);
+				set_zoom(SCALE_C * sa);
 			} else if (inp == '-'){
-				set_zoom(1.25 * sa);
+				set_zoom(1.0f/SCALE_C * sa);
 			} else if (inp == 'w'){
 				set_center(ca, cb - MOVC * sb);
 			} else if (inp == 's'){
@@ -423,7 +481,7 @@ int main (int argc, const char *argv[]){
 				keyboard_mode(KEY_NORMAL);
 				ikb_block(false);
 				exit(0);
-			} else if (inp == 'c'){
+			} else if (inp == 'r'){
 				ITER_MAX = 100;
 				set_center(-0.5, 0.0);
 				set_zoom(1.8);
@@ -435,6 +493,8 @@ int main (int argc, const char *argv[]){
 				use_dither = !use_dither;
 			} else if (inp == 'x'){
 				use_overlays = !use_overlays;
+			} else if (inp == 'c'){
+				use_ramp = !use_ramp;
 			} else if (isdigit(inp)){
 				set_fractal(inp - '0');
 			} else {
